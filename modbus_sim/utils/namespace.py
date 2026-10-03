@@ -5,6 +5,7 @@ Copyright (c) 2016 Riptide IO, Inc. All Rights Reserved.
 
 from __future__ import unicode_literals
 from __future__ import absolute_import
+from __future__ import print_function
 
 import logging
 import json
@@ -131,7 +132,7 @@ class Namespace(object):
         return self.__dict__.keys()
 
     def pprint(self):
-        print self.dump()
+        print(self.dump())
 
     def new(self, *args, **kwargs):
         return self.__class__(*args, **kwargs)

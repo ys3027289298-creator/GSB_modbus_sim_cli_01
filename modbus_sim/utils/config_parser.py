@@ -3,7 +3,10 @@ Copyright (c) 2016 Riptide IO, Inc. All Rights Reserved.
 
 """
 from __future__ import absolute_import, unicode_literals
-from ConfigParser import ConfigParser
+try:
+    from ConfigParser import ConfigParser
+except ImportError:
+    from configparser import ConfigParser
 import yaml
 
 
@@ -13,7 +16,7 @@ class YamlConfigParser(object):
     def read(config_file):
         config = dict()
         with open(config_file) as conffile:
-            config = yaml.load(conffile.read())
+            config = yaml.safe_load(conffile.read())
         return config
 
     @staticmethod
@@ -57,4 +60,3 @@ def build_config():
     config.add_section('Simulation')
     config.set('Simulation', 'time interval', "1")
     return config
-

@@ -5,13 +5,30 @@ Copyright (c) 2016 Riptide IO, Inc. All Rights Reserved.
 from __future__ import absolute_import, unicode_literals
 
 
-import serial
-from modbus_tk.defines import (
-    COILS, DISCRETE_INPUTS, HOLDING_REGISTERS, ANALOG_INPUTS)
-from modbus_tk.modbus_rtu import RtuServer, RtuMaster
-from modbus_tk.modbus_tcp import TcpServer, TcpMaster
+try:
+    import serial
+except ImportError:
+    serial = None
+try:
+    from modbus_tk.defines import (
+        COILS, DISCRETE_INPUTS, HOLDING_REGISTERS, ANALOG_INPUTS)
+    from modbus_tk.modbus_rtu import RtuServer, RtuMaster
+    from modbus_tk.modbus_tcp import TcpServer, TcpMaster
+    _HAS_MODBUS_TK = True
+except ImportError:
+    # Keep the block-type constants available so validation logic and tests
+    # work without modbus_tk installed; server/master backends stay empty.
+    _HAS_MODBUS_TK = False
+    COILS, DISCRETE_INPUTS, HOLDING_REGISTERS, ANALOG_INPUTS = 1, 2, 4, 3
+    RtuServer = RtuMaster = TcpServer = TcpMaster = None
 
 from modbus_sim.utils.logger import get_logger
+from modbus_sim.utils.errors import (
+    AddressOutOfRangeError,
+    ModbusSimError,
+    validate_address,
+    validate_block,
+)
 
 ADDRESS_RANGE = {
     COILS: 0,
@@ -30,15 +47,11 @@ REGISTER_QUERY_FIELDS = {"bit": range(0, 16),
                          "wordcount": 1,
                          "wordorder": ["big", "little"]}
 
-SERVERS = {
-    "tcp": TcpServer,
-    "rtu": RtuServer
-}
+SERVERS = dict((name, cls) for name, cls in (
+    ("tcp", TcpServer), ("rtu", RtuServer)) if cls is not None)
 
-MASTERS = {
-    "tcp": TcpMaster,
-    "rtu": RtuMaster
-}
+MASTERS = dict((name, cls) for name, cls in (
+    ("tcp", TcpMaster), ("rtu", RtuMaster)) if cls is not None)
 
 BLOCK_TYPES = {"coils": COILS,
                "discrete_inputs": DISCRETE_INPUTS,
@@ -51,6 +64,10 @@ logger = get_logger("modbus_simu")
 
 class PseudoSerial(object):
     def __init__(self, tty_name, **kwargs):
+        if serial is None:
+            raise ModbusSimError(
+                "pyserial is required for rtu simulation but is not "
+                "installed")
         self.ser = serial.Serial()
         self.ser.port = tty_name
 
@@ -85,15 +102,21 @@ class ModbusSimu(object):
     def __init__(self, server="tcp", *args, **kwargs):
         self._server_type = server
         self._port = kwargs.get('port', None)
+        self._blocks = {}
         if server == 'rtu':
             tty_name = kwargs['port']
             kwargs.pop('port', None)
             self._serial = PseudoSerial(tty_name, **kwargs)
-            kwargs = {k: v for k, v in kwargs.iteritems() if k == "serial"}
+            kwargs = {k: v for k, v in kwargs.items() if k == "serial"}
             kwargs['serial'] = self._serial.ser
         else:
             kwargs['port'] = int(kwargs['port'])
-        self.server = SERVERS.get(server, None)(*args, **kwargs)
+        server_cls = SERVERS.get(server, None)
+        if server_cls is None:
+            raise ModbusSimError(
+                "No %r server backend available (modbus_tk is not "
+                "installed)" % server)
+        self.server = server_cls(*args, **kwargs)
         self.simulate = kwargs.get('simulate', False)
 
     @property
@@ -119,28 +142,44 @@ class ModbusSimu(object):
     def add_block(self, slave_id, block_name, block_type, starting_add, size):
         logger.info("Adding data block- {slave_id: %s, type: %s,"
                     " starting_add: %s, block_size: %s" % (slave_id, block_name, starting_add, size))
+        validate_block(starting_add, size)
         slave = self.server.get_slave(slave_id)
         slave.add_block(block_name, block_type, starting_add, size)
+        self._blocks[(slave_id, block_name)] = (starting_add, size)
 
     def remove_block(self, slave_id, block_name):
         logger.info("Removing data block :%s from slave: %s" % (block_name, slave_id))
         slave = self.server.get_slave(slave_id)
         slave.remove_block(block_name)
+        self._blocks.pop((slave_id, block_name), None)
 
     def remove_all_blocks(self, slave_id):
         logger.info("Removing all data block from slave: %s" % slave_id)
         slave = self.server.get_slave(slave_id)
         slave.remove_all_blocks()
+        self._blocks = {key: value for key, value in self._blocks.items()
+                        if key[0] != slave_id}
+
+    def _validate_access(self, slave_id, block_name, address, count):
+        block = self._blocks.get((slave_id, block_name))
+        if block is None:
+            raise AddressOutOfRangeError(
+                "No block %r configured on slave %s" % (block_name, slave_id),
+                slave_id=slave_id, block_name=block_name)
+        validate_address(address, count, block[0], block[1])
 
     def set_values(self, slave_id, block_name, address, values):
         logger.debug("Setting values: %s to data block: %s on slave: %s ,"
                      "starting at address: %s" % (values, block_name, slave_id, address))
+        values = list(values)
+        self._validate_access(slave_id, block_name, address, len(values))
         slave = self.server.get_slave(slave_id)
         slave.set_values(block_name, address, values)
 
     def get_values(self, slave_id, block_name, address, size):
         logger.debug("Getting values from data block: %s on slave: %s ,"
                      "starting at address: %s, size: %s" % (block_name, slave_id, address, size))
+        self._validate_access(slave_id, block_name, address, size)
         slave = self.server.get_slave(slave_id)
         return slave.get_values(block_name, address, size)
 
@@ -203,7 +242,7 @@ def get_bit(byteval, idx):
 def pack_float(words):
     temp = []
     for x in words:
-        temp.append(struct.unpack("!f", ("%08x" % x).decode('hex'))[0])
+        temp.append(struct.unpack("!f", struct.pack(">I", x & 0xFFFFFFFF))[0])
     return temp
 
 
@@ -260,4 +299,3 @@ class Configuration:
 #             fh.setFormatter(fmtr)
 #             fh.setLevel(cfg.modbus_file_log_level.upper())
 #             logger.addHandler(fh)
-

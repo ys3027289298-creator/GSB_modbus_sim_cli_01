@@ -44,3 +44,39 @@ modbus_simulator  -c <PATH_TO_Config_File>
 
 # sample simulation config
 [conf.yml](modbus_sim/configs/conf.yml)
+
+# Error handling and reconnection policy
+
+All boundary violations are raised as subclasses of
+`modbus_sim.utils.errors.ModbusSimError`, one family per boundary:
+
+* register address space: `AddressOutOfRangeError`, `ZeroLengthRequestError`
+* function codes: `UnsupportedFunctionCodeError`
+* connection lifecycle: `ConnectionLostError`, `ReconnectExhaustedError`
+* scheduled tasks: `ResponseTimeoutError` (a failing tick is logged and the
+  schedule continues; `BackgroundJob.cancel()` joins the running tick)
+
+When the connection drops, `ConnectionManager` (see
+`modbus_sim/simulation/connection.py`) applies a **retry, then report**
+policy - it never degrades to stale data:
+
+1. Retry: reconnect and re-execute, bounded by `max_retries` with
+   exponential backoff. Register state lives in `RegisterFile`, independent
+   of the transport, so a reconnect never loses or duplicates data.
+2. Report: once retries are exhausted, `ReconnectExhaustedError` is raised.
+   The register file is left intact and the next request re-attempts
+   recovery.
+3. A response timeout raises `ResponseTimeoutError` immediately (no
+   automatic retry, since the outcome is ambiguous) and cancels the
+   in-flight write before commit, so a late response cannot mutate state.
+
+Idempotency: requests may carry a `request_id`; completed ids are cached
+(bounded) and retransmits return the cached result without re-applying.
+Writes are validated as a whole and committed atomically, so repeated or
+interrupted requests never leave partial register state.
+
+# Tests
+
+```
+python3 -m unittest discover -s tests -v
+```

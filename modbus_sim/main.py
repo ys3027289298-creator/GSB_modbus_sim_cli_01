@@ -5,6 +5,7 @@ Modbus Simu App
 ===============
 """
 
+from __future__ import print_function
 
 try:
     import asyncio
@@ -31,13 +32,19 @@ MAP = {
 }
 
 
-@asyncio.coroutine
-def simu_factory(simu):
+def _run_simu(simu):
     try:
         simu.run()
     except Exception as e:
-        print e
+        print(e)
         raise
+
+
+if hasattr(asyncio, "coroutine"):
+    simu_factory = asyncio.coroutine(_run_simu)
+else:
+    async def simu_factory(simu):
+        _run_simu(simu)
 
 
 def handle_sigterm():
@@ -207,12 +214,12 @@ class ModbusServer(object):
         # self.data_map[self.active_slave][current_tab]['dirty'] = False
         _data = self.data_map[self.active_slave][current_tab]
         item_strings = _data['item_strings']
-        for i in xrange(int(self.data_count.text)):
+        for i in range(int(self.data_count.text)):
             if len(item_strings) < self.block_size:
                 updated_data, item_strings = ct.content.add_data(1, item_strings)
                 _data['data'].update(updated_data)
                 _data['item_strings'] = item_strings
-                for k, v in updated_data.iteritems():
+                for k, v in updated_data.items():
                     self.modbus_device.set_values(int(self.active_slave),
                                                   current_tab, k, v)
             else:
@@ -230,7 +237,7 @@ class ModbusServer(object):
         try:
             _data = self.data_map[self.active_slave][current_tab]
             _data['data'].update(data)
-            for k, v in data.iteritems():
+            for k, v in data.items():
                 self.modbus_device.set_values(int(self.active_slave),
                                               current_tab, k, int(v))
         except KeyError:
@@ -285,7 +292,7 @@ class ModbusServer(object):
         self.modbus_device.add_block(slave_id, blockname,
                                      BLOCK_TYPES[blockname], 0,
                                      self.block_size)
-        for k, v in new_data.iteritems():
+        for k, v in new_data.items():
             self.modbus_device.set_values(slave_id, blockname, k, int(v))
 
     def change_simulation_settings(self, **kwargs):
@@ -420,7 +427,7 @@ class ModbusSimuApp(object):
                     else:
                         _slaves.append(int(slave))
             except (TypeError, ValueError):
-                print "Invalid range encountered"
+                print("Invalid range encountered")
 
             return _slaves
 
@@ -483,4 +490,3 @@ def main(title, args, unknown):
         main_logger.error("No Modbus devices available for simulation , check configuration file ")
 
     main_logger.info("Bye Bye!!!")
-

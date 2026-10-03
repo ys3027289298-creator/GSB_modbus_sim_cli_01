@@ -15,15 +15,26 @@ class BackgroundJob(threading.Thread):
         self.interval = interval
         self.simulate_func = function
         self.stop_timer = threading.Event()
+        self.daemon = True
 
     def run(self):
         self._logger.info("Start %s thread" % self._name)
         while not self.stop_timer.is_set():
             if not self.stop_timer.is_set():
-                self.simulate_func()
+                try:
+                    self.simulate_func()
+                except Exception:
+                    # A single failing tick (e.g. response timeout, lost
+                    # connection) must never kill the scheduled job.
+                    self._logger.exception(
+                        "%s tick failed, schedule continues", self._name)
             self.stop_timer.wait(self.interval)
         self._logger.info("Stop %s thread" % self._name)
 
-    def cancel(self):
+    def cancel(self, timeout=None):
         self.stop_timer.set()
+        # Wait for a tick that is already running instead of returning while
+        # the job still mutates state (cancel/start race).
+        if self.is_alive():
+            self.join(timeout)
 
